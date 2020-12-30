@@ -5,15 +5,15 @@ import { Boundary } from './boundary.js';
 import { FLIPSolver } from './flip-solver.js';
 
 // simulation grid
-const grid  = {
-  lowerLeft : [-40,-20],     // lower left corner of simulation
-  upperRight : [40, 20],     // upper rigt corner of simulation
-  cellSize : 1,                  // size of 1 grid cell
+const grid = {
+  lowerLeft: [-40, -20],     // lower left corner of simulation
+  upperRight: [40, 20],     // upper rigt corner of simulation
+  cellSize: 1,                  // size of 1 grid cell
 };
 grid.min = grid.lowerLeft;   // for convenience
 grid.max = grid.upperRight;  // for convenience
-grid.dim = [(grid.max[0]-grid.min[0]) / grid.cellSize, // resolution in x and y
-            (grid.max[1]-grid.min[1]) / grid.cellSize];
+grid.dim = [(grid.max[0] - grid.min[0]) / grid.cellSize, // resolution in x and y
+(grid.max[1] - grid.min[1]) / grid.cellSize];
 
 async function main() {
 
@@ -30,27 +30,24 @@ async function main() {
   }
 
   // look up the divcontainer
-  const loadContainerElement = document.querySelector("#load");  
+  const loadContainerElement = document.querySelector("#load");
 
-  // UI parameters defaults
-  let parametersUI = {    
-    fluidity: 0.95,    
-    GPU: ext ? true : false,
-    preset: 0,
-  };
-
-  // simulation variables
-  const speed = 2.0;              // in increments of 1/60 seconds
-  let elapsedTime = 0;
-  let gpu = ext ? true : false;   // use GPU acceleration
+  // load FLIP text shape that's stored in an "OBJ"-like format
+  let response = await fetch("resources/flip.txt");
+  let text = await response.text();
+  let fontShape = parseOBJ(text);
 
   // Load all shaders from separate files
-  //let response = await fetch('shaders/ParticleSphereShader2D.vert');
-  let response = await fetch('shaders/grid.vert');
+  response = await fetch('shaders/ParticleSphereShader2D.vert');
   let vs = await response.text();
-  //response = await fetch('shaders/ParticleSphereShader2D.frag');
-  response = await fetch('shaders/grid.frag');
+  response = await fetch('shaders/ParticleSphereShader2D.frag');
   let fs = await response.text();
+
+  response = await fetch('shaders/grid.vert');
+  let gridVS = await response.text();
+  response = await fetch('shaders/grid.frag');
+  let gridFS = await response.text();
+
   response = await fetch("shaders/default.vert");
   let defaultVS = await response.text();
   response = await fetch('shaders/Boundary.vert');
@@ -64,73 +61,111 @@ async function main() {
     boundaryFS,
   };
 
-  // Use utils to compile the shaders and link into a program
+  // program to render particles as disks
   let program = webglUtils.createProgramFromSources(gl, [vs, fs]);
-
-  // look up where the vertex data needs to go.
   let positionAttributeLoc = gl.getAttribLocation(program, "a_position");
+  let velocityAttributeLoc = gl.getAttribLocation(program, "a_velocity");
   let resolutionLoc = gl.getUniformLocation(program, "u_resolution");
   let numParticlesLoc = gl.getUniformLocation(program, "u_numParticles");
+  let colorModeLoc = gl.getUniformLocation(program, "u_colorMode");
   let particleRadiusLoc = gl.getUniformLocation(program, "u_particleRadius");
-  let colorAttributeLoc = gl.getAttribLocation(program, "a_color");
+
+  // program to display the grid
+  let gridPrg = webglUtils.createProgramFromSources(gl, [gridVS, gridFS]);
+  let gridPrgLocs = {
+    position: gl.getAttribLocation(gridPrg, 'a_position'),
+    color: gl.getAttribLocation(gridPrg, 'a_color'),
+    resolution: gl.getUniformLocation(gridPrg, 'u_resolution'),
+    cellSize: gl.getUniformLocation(gridPrg, 'u_cellSize'),
+  };
 
   // create FLIP solver
   let flip = new FLIPSolver(grid);
-  let positions = flip.emitParticles( (x, y, data) => m3.distance(x, y, data.pos[0], data.pos[1]) < data.radius,
-                                       {pos: [0, 0], radius: 15});
+  let positions = flip.emitParticles((x, y, data) => m3.distance(x, y, data.pos[0], data.pos[1]) < data.radius,
+    { pos: [0, 0], radius: 15 }, 7.0);
 
+  //  
+  // PARTICLES
+  //
 
   // Create a buffer and put points in it
   let positionBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
 
-  // Create a vertex array object (attribute state)
+
+  // vertex array object
   let vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
-
-  // Turn on the attribute
   gl.enableVertexAttribArray(positionAttributeLoc);
-  
+  gl.vertexAttribPointer(positionAttributeLoc, 2, gl.FLOAT, false, 0, 0);
 
-  // Tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
-  let size = 2;          // 2 components per iteration
-  let type = gl.FLOAT;   // the data is 32bit floats
-  let normalize = false; // don't normalize the data
-  let stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next position
-  let offset = 0;        // start at the beginning of the buffer
-  gl.vertexAttribPointer(
-    positionAttributeLoc, size, type, normalize, stride, offset);
 
-  // Create a colro buffer and put colors in it
+  let velocityBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, velocityBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(flip.velocities), gl.STATIC_DRAW);
+  gl.bindVertexArray(vao);
+
+  gl.enableVertexAttribArray(velocityAttributeLoc);
+  gl.vertexAttribPointer(velocityAttributeLoc, 2, gl.FLOAT, false, 0, 0);
+
+  //  
+  // GRID
+  //
+
+  let gridData = flip.grid.getCells();
+  let gridBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, gridBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridData.positions), gl.STATIC_DRAW);
+
+  let gridVao = gl.createVertexArray();
+  gl.bindVertexArray(gridVao);
+  gl.enableVertexAttribArray(gridPrgLocs.position);
+  gl.vertexAttribPointer(gridPrgLocs.position, 2, gl.FLOAT, false, 0, 0);
+
+  // Create a color buffer and put colors in it
   let colorBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-  let colors = [];
-  for (let i=0; i<positions.length/2; i++) colors.push(1,1,1);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
-
-  // Turn on the attribute
-  gl.enableVertexAttribArray(colorAttributeLoc);
-  
-  // Tell the attribute how to get data out of colorBuffer (ARRAY_BUFFER)
-  size = 3;          // 3 components per iteration
-  gl.vertexAttribPointer(colorAttributeLoc, size, type, normalize, stride, offset);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridData.colors), gl.STATIC_DRAW);
+  gl.bindVertexArray(gridVao);
+  gl.enableVertexAttribArray(gridPrgLocs.color);
+  gl.vertexAttribPointer(gridPrgLocs.color, 3, gl.FLOAT, false, 0, 0);
 
 
-  // hide message that says "loading..."
-  loadContainerElement.hidden = true    
   let boundary = new Boundary(gl, shaders, grid);
+
+  // UI parameters defaults
+  let parametersUI = {
+    fluidity: 0.95,
+    emissionSpeed: 10,
+    grid: false,
+    GPU: ext ? true : false,
+    preset: 0,
+    resolution: 0,
+  };
 
   let params = [
     { type: "slider", key: "fluidity", change: updateUI, min: 0.8, max: 1, precision: 2, step: 0.01, uiPrecision: 2 },
+    { type: "slider", key: "emissionSpeed", change: updateUI, min: -10, max: 10, precision: 1, step: 0.1, uiPrecision: 1 },
+    { type: "checkbox", key: "grid", change: updateUI },
+    { type: "option", key: "resolution", change: updateUI, options: ["low", "high"] },
   ];
   // only include GPU if webGL extension available
   if (ext) params.push({ type: "checkbox", key: "GPU", change: updateUI });
-  params.push({ type: "option", key: "preset", change: applyPreset, options: ["none", "washer", "splashy", "sticky", "font", "inverse"] });
+  params.push({ type: "option", key: "preset", change: applyPreset, options: ["none", "dam break", "dual dam", "ball", "font"] });
   let widgets = webglLessonsUI.setupUI(document.querySelector("#ui"), parametersUI, params);
+
+  // simulation variables
+  const speed = 2.0;              // in increments of 1/60 seconds
+  let elapsedTime = 0;
+  let gpu = ext ? true : false;   // use GPU acceleration
+  let resolution = parametersUI.resolution;
+  let frameCounter = 0;
+
   updateUI();
 
-  let frameCounter = 0;
+  // hide message that says "loading..."
+  loadContainerElement.hidden = true
 
   // handle mouse clicks
   gl.canvas.addEventListener('mousedown', (e) => {
@@ -142,16 +177,12 @@ async function main() {
   window.addEventListener('keydown', (e) => {
     if (e.key == "r") {
       e.preventDefault();
-      applyPreset();
+      resolution = (parametersUI.resolution == 0) ? 1 : 0; // force a reset of the sim
+      updateUI();
     }
-    else if (e.key == "n") {
-      e.preventDefault();
-      counter--;
-    }
-
   });
 
-  
+
   // pass pointer to function to draw scene
   requestAnimationFrame(drawScene);
 
@@ -165,7 +196,7 @@ async function main() {
       frameCounter++;
     }
     elapsedTime += 1 / 60.0;
-    
+
 
     // draw on the whole canvas
     webglUtils.resizeCanvasToDisplaySize(gl.canvas);
@@ -175,36 +206,37 @@ async function main() {
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    // Tell it to use our program (pair of shaders)
+    // render grid
+    if (parametersUI.grid) {
+      gridData = flip.grid.getCells();
+
+      gl.useProgram(gridPrg);
+      gl.bindVertexArray(gridVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gridBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridData.positions), gl.STATIC_DRAW);
+      gl.bindVertexArray(gridVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridData.colors), gl.STATIC_DRAW);
+      // uniforms
+      gl.uniform1f(gridPrgLocs.resolution, grid.max[0] * 1.02);
+      gl.uniform1f(gridPrgLocs.cellSize, gl.canvas.width / (2.5 * grid.dim[0]));
+      gl.drawArrays(gl.POINTS, 0, gridData.positions.length);
+    }
+
+    // render particles
     gl.useProgram(program);
-
-    // Bind the attribute/buffer set we want.
     gl.bindVertexArray(vao);
-
-    // Bind it to ARRAY_BUFFER (think of it as ARRAY_BUFFER = positionBuffer)
     gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(flip.positions), gl.STATIC_DRAW);
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, velocityBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(flip.velocities), gl.STATIC_DRAW);
+
     let numParticles = flip.positions.length / 2; // x and y coords
-    //if (elapsedTime > 2 && elapsedTime<2.1) console.log(Math.min(...flip.positions));
-
-    let data = flip.grid.getCells();
-    numParticles += data.positions.length / 2; // x and y coords
-
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([...data.positions, ...positions]), gl.STATIC_DRAW);
-
-
-    // Bind it to ARRAY_BUFFER (think of it as ARRAY_BUFFER = positionBuffer)
-    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-    colors = [];
-    for (let i=0; i<flip.positions.length / 2; i++) colors.push(1,0,1);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([...data.colors, ...colors]), gl.STATIC_DRAW);
-    // gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.colors), gl.STATIC_DRAW);
-
-
     // uniforms
-    gl.uniform1f(resolutionLoc, grid.max[0]*1.02);
+    gl.uniform1f(resolutionLoc, grid.max[0] * 1.02);
     gl.uniform1i(numParticlesLoc, numParticles);
-    gl.uniform1f(particleRadiusLoc, gl.canvas.width / (3.0 * grid.dim[0]));
+    gl.uniform1f(particleRadiusLoc, gl.canvas.width / (2.0 * grid.dim[0]));
     gl.drawArrays(gl.POINTS, 0, numParticles);
 
     boundary.draw(gl, grid.max[0], [1, 1, 1, 1]);
@@ -225,18 +257,96 @@ async function main() {
 
     // simuation coordinates
     pos = [grid.max[0] * pos[0], grid.max[1] * pos[1]];
-    flip.emitParticles( (x, y, data) => m3.distance(x, y, data.pos[0], data.pos[1]) < data.radius,
-                        {pos, radius: 10} );              
+    flip.emitParticles((x, y, data) => m3.distance(x, y, data.pos[0], data.pos[1]) < data.radius,
+      { pos, radius: 10 }, parametersUI.emissionSpeed);
   }
 
   function applyPreset() {
-
+    switch (parametersUI.preset) {
+      case 0: return;
+      case 1: //'dam break",        
+      case 2: //"dual dam break", 
+      case 3: //"ball"
+      case 4: //"font"      
+        resolution = (parametersUI.resolution == 0) ? 1 : 0; // force a reset of the sim
+        break;
+      default: return;
+    }
     updateUI();
   }
 
   function updateUI() {
+
+    // handle change of res first
+    if (resolution != parametersUI.resolution) {
+      // reset simulator
+      elapsedTime = 0;
+      resolution = parametersUI.resolution;
+      switch (resolution) {
+        case 0:
+          grid.cellSize = 1.0;
+          break;
+        case 1:
+          grid.cellSize = 0.5;
+          break;
+      }
+      grid.dim = [(grid.max[0] - grid.min[0]) / grid.cellSize, // resolution in x and y
+      (grid.max[1] - grid.min[1]) / grid.cellSize];
+
+      boundary = new Boundary(gl, shaders, grid);
+      flip = new FLIPSolver(grid);
+
+      if (parametersUI.preset < 4) {
+        flip.emitParticles((x, y, data) => m3.distance(x, y, data.pos[0], data.pos[1]) < data.radius,
+          { pos: [0, 0], radius: 15 }, 7.0);
+      }
+      else {
+        function isInShape(x, y, data) {
+          let shape = data.shape;
+          let scale = data.scale;
+
+          // shamelessly taken from stack overflow
+          // (nice use of the determinant I must say)
+          //
+          // returns true iff the line from (a,b)->(c,d) intersects with (p,q)->(r,s)
+          function intersects(a, b, c, d, p, q, r, s) {
+            let det, gamma, lambda;
+            det = (c - a) * (s - q) - (r - p) * (d - b);
+            if (det === 0) return false;
+            else {
+              lambda = ((s - q) * (r - a) + (p - r) * (s - b)) / det;
+              gamma = ((b - d) * (r - a) + (c - a) * (s - b)) / det;
+              return (0 < lambda && lambda < 1) && (0 < gamma && gamma < 1);
+            }
+          };
+          let numIntersection = 0;
+          // loop over all prims
+          for (const prim of shape.prims) {
+            // loop over all segments in this prim
+            for (let i = 0; i < prim.length - 1; ++i) {
+              // retrieve two end points of segment
+              let p0 = shape.positions[prim[i]];
+              let p1 = shape.positions[prim[i + 1]];
+              let p = p0[0] * scale;
+              let q = p0[1] * scale;
+              let r = p1[0] * scale;
+              let s = p1[1] * scale;
+              if (intersects(x, y, x, y + grid.max[0] * 5, p, q, r, s)) numIntersection++;
+            }
+          }
+          let modulo = numIntersection % 2;
+          return data.invert ? modulo == 0 : modulo == 1;
+        }
+
+        positions = flip.emitParticles(isInShape, {
+          shape: fontShape, scale: grid.max[0] * 2,
+          invert: false
+        }, 0);
+      }
+    }
+
     gpu = ext && parametersUI.GPU;
-    flip.flipness = parametersUI.fluidity; 
+    flip.flipness = parametersUI.fluidity;
   }
 }
 

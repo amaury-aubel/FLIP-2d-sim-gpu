@@ -18,7 +18,7 @@ class FLIPSolver {
   }
 
 
-  emitParticles(isInsideShape, args) {
+  emitParticles(isInsideShape, args, emissionSpeed) {
     const origin = this.grid.lowerLeft;
     const cellSize = this.grid.cellSize;
 
@@ -41,7 +41,7 @@ class FLIPSolver {
           if (isInsideShape(jittered_x, jittered_y, args)) {
 
               this.positions.push(jittered_x, jittered_y);
-              this.velocities.push(7, 1);
+              this.velocities.push(emissionSpeed, 1);
           }
         }
       }
