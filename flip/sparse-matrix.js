@@ -1,15 +1,5 @@
 class SparseMatrix {
 
-
-  /* Sparse matrix data */
-  // std::vector<std::vector<UnsignedInt>> rowIndices;
-  // std::vector<std::vector<T>> rowValues;
-
-  // /* Compact data */
-  // std::vector<T> compactValues;
-  // std::vector<UnsignedInt> compactIndices;
-  // std::vector<UnsignedInt> rowStartIdx;
-
   constructor(size) {
     this.size = size;
 
@@ -34,7 +24,7 @@ class SparseMatrix {
 
   // i, j: integers
   addToElement(i, j, val) {
-
+      
       let k = this.rowIndices[i].indexOf(j);
       if (k >= 0) this.rowValues[i][k] += val;       
       else {

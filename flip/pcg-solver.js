@@ -22,7 +22,7 @@ function addScaled(alpha, x, y) {
 
 // Basically taken from Robert Bridson book on fluid simulation (aka fluid bible)
 class PCGSolver {
-  _toleranceFactor = 1e-9;
+  _toleranceFactor = 1e-6;
   _maxIterations = 400;
 
   /* Status of last solve */
@@ -68,8 +68,7 @@ class PCGSolver {
     /* must prepare compact data for Matrix * Vector operation */
     matrix.compressData();
 
-    let tolerance = this._toleranceFactor * this._lastResidual;
-    console.log(tolerance);    
+    let tolerance = this._toleranceFactor * this._lastResidual;     
     for (let iter=0; iter < this._maxIterations; ++iter) {
       matrix.multiply(s, z);
       const alpha = rho / dotProduct(s, z);

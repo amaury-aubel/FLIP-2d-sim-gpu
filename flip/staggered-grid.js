@@ -51,6 +51,10 @@ class StaggeredGrid {
         this.vy[j].fill(0);
       }
 
+      // deep clone the 2d arrays
+      this.weightX = this.vx.map((value) => [...value]);
+      this.weightY = this.vy.map((value) => [...value]);
+
       // mark cells as AIR
       this.cells = new Array(grid.dim[0]);
       for (let i = 0; i < this.cells.length; ++i) {
@@ -124,6 +128,77 @@ class StaggeredGrid {
 
     return Math.max(0, 1 - Math.abs(x)) * Math.max(0, 1 - Math.abs(y));
   }
+ 
+
+  optimizedTransferToGrid(positions, velocities) {
+
+    for (let i = 0; i <= this.dim[0]; ++i) {
+      for (let j = 0; j < this.dim[1]; ++j) {        
+        this.weightX[i][j] = 0;
+        this.vx[i][j] = 0;        
+      }
+    }
+    for (let i = 0; i < this.dim[0]; ++i) {
+      for (let j = 0; j <= this.dim[1]; ++j) {
+        this.weightY[i][j] = 0;
+        this.vy[i][j] = 0;
+      }
+    }
+
+    for (let i = 0; i < this.dim[0]; ++i) {
+      for (let j = 0; j < this.dim[1]; ++j) this.cells[i][j] = voxelType.AIR;      
+    }
+    
+    // loop over particles
+    const numParticles = positions.length/2;
+    for (let p=0; p<numParticles; ++p) {
+
+      let [i, j] = this.worldToGridCell(positions[2*p], positions[2*p+1]);      
+      this.cells[i][j] = voxelType.FLUID;
+
+      let [x, y] = this.worldToGrid(positions[2*p], positions[2*p+1]);
+
+      // velocity x
+      for (let v=-1; v<=1; ++v) {
+        const jj = j+v;
+        if (jj < 0 || jj>= this.dim[1]) continue;
+        
+        for (let u=0; u<=1; ++u) { 
+          const ii = i+u;
+          let wx = this.kernel(x - ii, y - jj - 0.5);
+          this.weightX[ii][jj] += wx;
+          this.vx[ii][jj] += wx * velocities[2*p];
+        }
+      }
+
+      // velocity y
+      for (let u=-1; u<=1; ++u) {
+        const ii = i+u;
+        if (ii < 0 || ii>=this.dim[0]) continue;
+        
+        for (let v=0; v<=1; ++v) { 
+          const jj = j+v;
+          let wy = this.kernel(x - ii - 0.5, y - jj);
+          this.weightY[ii][jj] += wy;
+          this.vy[ii][jj] += wy * velocities[2*p+1];
+        }
+      }
+    }
+    // normalize
+    for (let i = 0; i <= this.dim[0]; ++i) {
+      for (let j = 0; j < this.dim[1]; ++j) {
+        if (this.weightX[i][j] < 1e-10) continue;
+        this.vx[i][j] /= this.weightX[i][j];
+      }
+    }
+    for (let i = 0; i < this.dim[0]; ++i) {
+      for (let j = 0; j <= this.dim[1]; ++j) {
+        if (this.weightY[i][j] < 1e-10) continue;
+        this.vy[i][j] /= this.weightY[i][j];
+      }
+    }
+  }
+
 
   // Transfer velocities from particles (position/velocity pair) to grid
   transferToGrid(positions, velocities) {
@@ -138,7 +213,7 @@ class StaggeredGrid {
     for (let i = 0; i <= this.dim[0]; ++i) {
       for (let j = 0; j <= this.dim[1]; ++j) {
 
-        if (this.isValidIdx(i, j)) this.cells[i][j] = voxelType.AIR;
+        //if (this.isValidIdx(i, j)) this.cells[i][j] = voxelType.AIR;
 
         // zero velocities
         if (j < this.dim[1]) this.vx[i][j] = 0;
@@ -166,14 +241,16 @@ class StaggeredGrid {
         // normalize
         for (let k = 0; k < 2; k++) {
 
-          if (sumWeight[k] > 1e-12) sumVel[k] /= sumWeight[k];
+          if (sumWeight[k] > 1e-10) sumVel[k] /= sumWeight[k];
         }
 
         // copy final velocity into grid
         if (j < this.dim[1]) this.vx[i][j] = sumVel[0];
         if (i < this.dim[0]) this.vy[i][j] = sumVel[1];
       }
+      
     }
+//    console.log(this.vy);
 
     // finally mark cells as FLUID or AIR
     this.markCells(mapToGrid);
@@ -265,8 +342,7 @@ class StaggeredGrid {
     // call conjugate gradient solver (Bridson's code)
     if (!pcgSolver.solve(matrix, rhs, solution)) {
       console.log("Conjugate Gradient failed!");
-    }
-    
+    }    
 
     // loop over all simulation domain (grid)
     for (let i = 0; i <= this.dim[0]; ++i) {
