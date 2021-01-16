@@ -2,7 +2,7 @@
 
 import { StaggeredGrid, voxelType, getMaxSpeed } from './staggered-grid.js';
 import {
-  createDataTexture, createIntDataTexture, createFramebuffer,
+  createDataTexture, createFixedDimDataTexture, createFramebuffer,
   makeBuffer, makeVertexArray, createProgram
 } from './shader-utils.js';
 
@@ -71,12 +71,25 @@ class FLIPSolver {
       cellSize: gl.getUniformLocation(this.updatePositionProgram, 'u_cellSize'),
     };
     this.updatePositionVA = makeVertexArray(gl, [[this.quadBuffer, this.updatePositionPrgLocs.position]]);
+
+    //
+    // PRESSURE SOLVE PROGRAM
+    //    
+    this.pressureSolvePrg = createProgram(gl, [shaders.defaultVS, shaders.pressureSolveFS]);
+    this.pressureSolvePrgLocs = {
+      position: gl.getAttribLocation(this.pressureSolvePrg, 'a_position'),
+      divergenceTex: gl.getUniformLocation(this.pressureSolvePrg, 'u_divergenceTex'),
+      matrixTex: gl.getUniformLocation(this.pressureSolvePrg, 'u_sparseMatrixTex'),
+      pressureTex: gl.getUniformLocation(this.pressureSolvePrg, 'u_pressureTex'),      
+    };
+    this.pressureSolveVA = makeVertexArray(gl, [[this.quadBuffer, this.pressureSolvePrgLocs.position]]);
+
   }
 
   switchMode(gpu) {
 
-    gpu = false;
-    return;
+    // gpu = false;
+    // return;
     
     // do nothing if we're already in the desired mode
     if (this.gpu == gpu) return;
@@ -318,8 +331,7 @@ class FLIPSolver {
   transferVelocitiesToGrid() {
     let start = performance.now();
 
-    //this.grid.transferToGrid(this.positions, this.velocities);
-    this.grid.optimizedTransferToGrid(this.positions, this.velocities);
+    this.grid.transferToGrid(this.positions, this.velocities);    
     
     // save a copy of the grid for FLIP scheme
     this.gridCopy = new StaggeredGrid(this.grid);
@@ -370,7 +382,7 @@ class FLIPSolver {
  
   advectParticlesGPU(substep, readResults) {
     let gl = this.gl;
-    console.log("GPU particle advection");
+    //console.log("GPU particle advection");
     gl.useProgram(this.updatePositionProgram);
     gl.bindVertexArray(this.updatePositionVA);// just a quad        
 
@@ -432,13 +444,18 @@ class FLIPSolver {
       frameTime += substep;      
 
       if (this.gpu) {
+        let start = performance.now();
+
         this.initTextures();
         const results = this.advectParticlesGPU(substep,true);
         for (let i=0; i<this.positions.length; ++i) this.positions[i] = results[i];
+
+        let stop = performance.now();
+        this.performance.advect += stop-start;
       }
       else this.advectParticles(substep);
 
-      if (this.gpu) {
+      if (false && this.gpu) {
         const results = this.transferVelocitiesToGridGPU();
         
         
@@ -460,7 +477,6 @@ class FLIPSolver {
           if (wx > 1e-8) tmpVelX[x][y] = results[i*4+0]/wx;
           if (wy > 1e-8) tmpVelY[x][y] = results[i*4+1]/wy;
         }
-
         // console.log("tmpVelY");
         // console.log(tmpVelY);
         // console.log("grid");        
@@ -475,8 +491,7 @@ class FLIPSolver {
           }
         }
 //        console.log(this.grid.vy);
-        this.gridCopy = new StaggeredGrid(this.grid);
-        
+        this.gridCopy = new StaggeredGrid(this.grid);        
       }
       else this.transferVelocitiesToGrid();
       
@@ -484,13 +499,144 @@ class FLIPSolver {
       
       this.grid.enforceBoundary(); // make sure we zero velocities out on edges of simulation grid
       let start = performance.now();
-      this.grid.pressureSolve(substep);
+      if (this.gpu) {
+        this.pressureSolveGPU(substep);
+
+        //this.grid.pressureSolve(substep);
+      }
+      else this.grid.pressureSolve(substep);
       let stop = performance.now();
       this.performance.pressureSolve += stop-start;
 
       this.transferVelocitiesFromGrid();      
 
     }
+  }
+
+  pressureSolveGPU(dt) {    
+    let gl = this.gl;
+
+    const nx = this.grid.dim[0];
+    const ny = this.grid.dim[1];
+    const numCells = nx * ny;
+
+    // init solver variables
+    let divergence = new Float32Array(numCells);
+    divergence.fill(0);
+    
+    // create final pressure texture 
+    // it has same dimensions as divergence
+    // we need to create two textures to avoid a feedback loop
+    // we'll cycle between these two as needed      
+    let pressure0Tex = createFixedDimDataTexture(gl, divergence, nx, ny, gl.R32F, gl.RED, gl.FLOAT);
+    let pressure1Tex = createFixedDimDataTexture(gl, divergence, nx, ny, gl.R32F, gl.RED, gl.FLOAT);
+
+    for (let j = 0; j < ny; ++j) {
+      for (let i = 0; i < nx; ++i) {
+                
+        if (this.grid.cells[i][j] == voxelType.FLUID) {
+          const row = i + nx * j;
+          divergence[row] = (this.grid.vx[i][j] - this.grid.vx[i+1][j]) + (this.grid.vy[i][j] - this.grid.vy[i][j+1]);
+        }
+      }
+    }
+    // recreate divergence Texture at each frame 
+    // as it needs to be reinitialized with proper data    
+    let divergenceTex = createFixedDimDataTexture(gl, divergence, nx, ny, gl.R32F, gl.RED, gl.FLOAT);    
+
+    // create sparse matrix
+    // five entries per row: diagonal element, row - nx, row - 1, row + 1, row + nx
+    let matrix = new Float32Array(5 * numCells);
+    matrix.fill(0);
+    const scale = dt / this.grid.cellSize;
+    for (let j = 0; j < ny; ++j) {
+      for (let i = 0; i < nx; ++i) {
+        const row = i + nx * j;
+        
+        if (this.grid.cells[i][j] != voxelType.FLUID) continue;
+
+        let cellType = [voxelType.SOLID, voxelType.SOLID, voxelType.SOLID, voxelType.SOLID];
+        if (i+1 < nx) cellType[2] = this.grid.cells[i + 1][j];
+        if (i-1 >= 0) cellType[1] = this.grid.cells[i - 1][j];
+        if (j+1 < ny) cellType[3] = this.grid.cells[i][j + 1];
+        if (j-1 >= 0) cellType[0] = this.grid.cells[i][j - 1];
+
+        const idxInRow = [
+          row - nx,
+          row - 1,
+          row + 1,          
+          row + nx,          
+        ];
+
+        // fill in sparse matrix
+        for (let cell = 0; cell < 4; ++cell) {
+          
+          if (cellType[cell] == voxelType.SOLID) continue;
+          
+          // if air or fluid
+          matrix[5*row] += scale;  // cell element (diagonal)
+
+          if (cellType[cell] == voxelType.FLUID) {
+            matrix[5*row + 1 + cell] = -scale; // neighboring cells
+          }
+        }
+      }
+    }
+      // create sparseMatrixTexture    
+    let sparseMatrixTex = createFixedDimDataTexture(gl, matrix, nx, ny*5, gl.R32F, gl.RED, gl.FLOAT);
+
+  
+    // the frame buffer where we write pressure    
+    let pressure1FB = createFramebuffer(gl, pressure0Tex);
+    let pressure0FB = createFramebuffer(gl, pressure1Tex);
+    
+
+    gl.useProgram(this.pressureSolvePrg);
+    gl.bindVertexArray(this.pressureSolveVA);
+
+    // bind texture to texture units 0,1,2
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, divergenceTex);
+    gl.activeTexture(gl.TEXTURE0 + 1);
+    gl.bindTexture(gl.TEXTURE_2D, sparseMatrixTex);
+    gl.activeTexture(gl.TEXTURE0 + 2);
+    gl.bindTexture(gl.TEXTURE_2D, pressure0Tex);
+
+    // tell the shader to look at the textures on texture units 0-2
+    gl.uniform1i(this.pressureSolvePrgLocs.divergenceTex, 0);
+    gl.uniform1i(this.pressureSolvePrgLocs.matrixTex, 1);
+    gl.uniform1i(this.pressureSolvePrgLocs.pressureTex, 2);
+    
+    for (let iter=0; iter<200; iter++) {
+
+      gl.activeTexture(gl.TEXTURE0 + 2);
+      gl.bindTexture(gl.TEXTURE_2D, pressure0Tex);
+  
+      // bind to proper frame buffer
+      gl.bindFramebuffer(gl.FRAMEBUFFER, pressure0FB);
+      gl.viewport(0, 0, nx, ny);      
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      gl.activeTexture(gl.TEXTURE0 + 2);
+      gl.bindTexture(gl.TEXTURE_2D, pressure1Tex);
+
+      // bind to proper frame buffer
+      gl.bindFramebuffer(gl.FRAMEBUFFER, pressure1FB);
+      gl.viewport(0, 0, nx, ny);      
+      gl.drawArrays(gl.TRIANGLES, 0, 6);      
+    }
+    const results = new Float32Array(numCells);
+    gl.readPixels(0, 0, nx, ny, gl.RED, gl.FLOAT, results);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // adjust velocity field to make it divergence free
+    this.grid.removeDivergence(results, scale);
+
+    // clean up
+    if (sparseMatrixTex) gl.deleteTexture(sparseMatrixTex);
+    if (pressure0Tex) gl.deleteTexture(pressure0Tex);
+    if (pressure1Tex) gl.deleteTexture(pressure1Tex);
+    if (divergenceTex) gl.deleteTexture(divergenceTex);
   }
 }
 

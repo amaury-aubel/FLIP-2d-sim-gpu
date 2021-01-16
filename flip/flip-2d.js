@@ -30,13 +30,16 @@ async function main() {
     alert("Your browser does not support EXT_color_buffer_float");
   }
 
-  // look up the divcontainer
-  const loadContainerElement = document.querySelector("#load");
-
+  // look up the divcontainers
+  const loadContainerElement = document.querySelector(".load_msg");
+  const fpsCounter = document.querySelector(".fps_counter");
+  
+  loadContainerElement.innerHTML="LOADING..";
   // load FLIP text shape that's stored in an "OBJ"-like .txt format
   let response = await fetch("resources/flip.txt");
   let text = await response.text();
   let fontShape = parseTxt(text);
+  loadContainerElement.innerHTML="LOADING...";
 
   // load boat that's stored in an OBJ format as well as hull
   response = await fetch("resources/boat.obj");
@@ -45,6 +48,7 @@ async function main() {
   response = await fetch("resources/boat_hull.txt");
   text = await response.text();
   let boatHull = parseTxt(text);  
+  loadContainerElement.innerHTML="LOADING....";
 
   // Load all shaders from separate files
   response = await fetch('shaders/ParticleSphereShader2D.vert');
@@ -56,6 +60,7 @@ async function main() {
   let gridVS = await response.text();
   response = await fetch('shaders/grid.frag');
   let gridFS = await response.text();
+  loadContainerElement.innerHTML="LOADING.....";
 
   response = await fetch("shaders/default.vert");
   let defaultVS = await response.text();
@@ -63,19 +68,13 @@ async function main() {
   let boundaryVS = await response.text();
   response = await fetch('shaders/Boundary.frag');
   let boundaryFS = await response.text();
+  loadContainerElement.innerHTML="LOADING......";
 
   response = await fetch('shaders/Boat.vert');
   let boatVS = await response.text();
   response = await fetch('shaders/Boat.frag');
   let boatFS = await response.text();
-
-  response = await fetch('shaders/PositionUpdate.frag');
-  let updatePositionFS = await response.text();
-
-  response = await fetch('shaders/TransferToGrid.vert');
-  let transferToGridVS = await response.text();
-  response = await fetch('shaders/TransferToGrid.frag');
-  let transferToGridFS = await response.text();
+  loadContainerElement.innerHTML="LOADING......";
 
   const shaders = {
     defaultVS,
@@ -83,9 +82,6 @@ async function main() {
     boundaryFS,
     boatVS,
     boatFS,
-    updatePositionFS,
-    transferToGridVS,
-    transferToGridFS,
   };
 
   let boat = new Boat(gl, shaders, grid, boatObj, boatHull);
@@ -168,7 +164,8 @@ async function main() {
     GPU: false,
     preset: 0,
     resolution: 0,
-    boat: false,
+    boat: true,
+    fps: false,
   };
 
   let params = [
@@ -176,6 +173,7 @@ async function main() {
     { type: "slider", key: "emissionSpeed", change: updateUI, min: -10, max: 10, precision: 1, step: 0.1, uiPrecision: 1 },
     { type: "checkbox", key: "boat", change: updateUI },    
     { type: "checkbox", key: "grid", change: updateUI },
+    { type: "checkbox", key: "fps", change: updateUI },
     { type: "option", key: "resolution", change: updateUI, options: ["low", "high"] },
     { type: "option", key: "preset", change: applyPreset, options: ["none", "dam break", "dual dam", "font"] },
   ];
@@ -215,22 +213,36 @@ async function main() {
   // pass pointer to function to draw scene
   requestAnimationFrame(drawScene);
 
+  let fpsTime = 0;
   // draw the scene
   function drawScene(curTime) {
 
     // advance simulation
     if (elapsedTime > 0.5) {// && frameCounter<2) {
-      if (displayBoat) boat.updatePositionAndOrient(flip);
+      let start = performance.now();
+            
+      if (displayBoat) boat.updatePositionAndOrient(speed / 60.0, flip);
       flip.switchMode(gpu);
       flip.elapsedTime = elapsedTime;
       flip.advanceFrame(speed / 60.0);
-      frameCounter++;
 
-      if (frameCounter % 1000 == 0) {
+      frameCounter++;
+      let stop = performance.now();      
+      fpsTime += stop-start;
+  
+      if (parametersUI.fps && frameCounter % 60 == 0) {
+        let fps = Math.round(1000.0 * frameCounter /  fpsTime);        
+        fpsCounter.innerHTML=fps + " FPS";
+        // reset counter
+        fpsTime = frameCounter = 0;
+      }      
+      else if (!parametersUI.fps && frameCounter % 2000 == 0) {
         for (const [key, value] of Object.entries(flip.performance)) {
           let val = value/frameCounter;
-          console.log(`${key}: ${val}`);        
+          console.log(`${key}: ${val}`);
+          flip.performance[key] = 0; // reset timer   
         }
+        fpsTime = frameCounter = 0; // reset counter
       }
     }
     elapsedTime += 1 / 60.0;
@@ -394,7 +406,8 @@ async function main() {
         }, 0);
       }
     }
-    
+    fpsCounter.hidden = !parametersUI.fps;
+
     if (displayBoat != parametersUI.boat) {
       if (parametersUI.boat) boat = new Boat(gl, shaders, grid, boatObj, boatHull);
       displayBoat = parametersUI.boat;
