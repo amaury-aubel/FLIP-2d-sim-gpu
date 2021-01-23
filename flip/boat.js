@@ -106,7 +106,7 @@ class Boat {
     }
   }
 
-  updatePositionAndOrient(flip) {
+  updatePositionAndOrient(deltaTime, flip) {
 
     // convert positions of convex hull vertices to simulation coordinates
     let positions = [];
@@ -161,10 +161,10 @@ class Boat {
       velX += gridVel[2 * k];
       velY += gridVel[2 * k + 1];
     }
-    // magic coefficients
-    velX *= 0.035/numSamplePoints;
-    velY *= 0.035/numSamplePoints;
-    velY += cumulBuoyancy*0.2;
+    
+    velX *= deltaTime/numSamplePoints;
+    velY *= deltaTime/numSamplePoints;
+    velY += cumulBuoyancy*0.2; // magic coefficient
 
     // lerp with previous velocity a little bit
     let filter = 0.2;
@@ -172,7 +172,7 @@ class Boat {
     velY = filter*this.vy + (1-filter)*velY;
 
     // clamp displacement to half a grid cell
-    const halfCell = 0.5*this.grid.cellSize;
+    const halfCell = 0.5*1; //this.grid.cellSize;
     if (Math.abs(velX) > halfCell) velX *= halfCell/Math.abs(velX);
     if (Math.abs(velY) > halfCell) velY *= halfCell/Math.abs(velY);
 

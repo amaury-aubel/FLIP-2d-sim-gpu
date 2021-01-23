@@ -83,54 +83,13 @@ class StaggeredGrid {
     return x >= 0 && x < this.dim[0] && y >= 0 && y < this.dim[1];
   }
 
-  mapParticlesToGrid(positions) {
-
-    // index all particle positions into our "grid"
-    // grid is a Hash Map for speed and sparsity        
-    let mapToGrid = new Map();
-    const numParticles = positions.length / 2;
-    const numCells = this.dim[0];
-    for (let i = 0; i < numParticles; ++i) {
-
-      const [x, y] = this.worldToGridCell(positions[2 * i], positions[2 * i + 1]);
-      let key = y * numCells + x;
-      if (mapToGrid.has(key)) {
-        let val = mapToGrid.get(key);
-        val.push(i);
-        mapToGrid.set(key, val);
-      }
-      else mapToGrid.set(key, [i]);
-    }
-    return mapToGrid;
-  }
-
-  // x and y are integers and refer to grid coordinates
-  getNearbyParticles(mapToGrid, x, y) {
-
-    const numCells = this.dim[0];
-
-    // cell and 8 adjacent cells
-    let keys = [y * numCells + x,
-    (y + 1) * numCells + x, (y - 1) * numCells + x,
-    y * numCells + x - 1, y * numCells + x + 1,
-    (y + 1) * numCells + x - 1, (y + 1) * numCells + x + 1,
-    (y - 1) * numCells + x - 1, (y - 1) * numCells + x + 1,
-    ];
-
-    let particles = [];
-    for (const key of keys) {
-      if (mapToGrid.has(key)) particles.push(mapToGrid.get(key));
-    }
-    return particles.flat(); // flatten array
-  }
-
   kernel(x, y) {
 
     return Math.max(0, 1 - Math.abs(x)) * Math.max(0, 1 - Math.abs(y));
   }
  
 
-  optimizedTransferToGrid(positions, velocities) {
+  transferToGrid(positions, velocities) {
 
     for (let i = 0; i <= this.dim[0]; ++i) {
       for (let j = 0; j < this.dim[1]; ++j) {        
@@ -199,76 +158,41 @@ class StaggeredGrid {
     }
   }
 
-
-  // Transfer velocities from particles (position/velocity pair) to grid
-  transferToGrid(positions, velocities) {
-
-    // convert particles world positions to a grid-coordinate system
-    const mapToGrid = this.mapParticlesToGrid(positions);
-
-    const cellSize = this.cellSize;
-    const halfCell = 0.5 * cellSize;
+  removeDivergence(pressure, scale) {
+    const nx = this.dim[0];
 
     // loop over all simulation domain (grid)
     for (let i = 0; i <= this.dim[0]; ++i) {
-      for (let j = 0; j <= this.dim[1]; ++j) {
-
-        //if (this.isValidIdx(i, j)) this.cells[i][j] = voxelType.AIR;
-
-        // zero velocities
-        if (j < this.dim[1]) this.vx[i][j] = 0;
-        if (i < this.dim[0]) this.vy[i][j] = 0;
-
-        let particles = this.getNearbyParticles(mapToGrid, i, j);
-        if (particles.length == 0) continue;
-
-        let sumVel = [0, 0];
-        let sumWeight = [0, 0];
-        let [x, y] = this.gridToWorld(i, j);
-        let xface = [x, y + halfCell];
-        let yface = [x + halfCell, y];
-
-        // add contributions of all nearby particles
-        // if particle is too far (i.e. over 1 cellSize away), kernel will return a value of 0
-        for (let p of particles) {
-          let wx = this.kernel((positions[2 * p] - xface[0]) / cellSize, (positions[2 * p + 1] - xface[1]) / cellSize);
-          let wy = this.kernel((positions[2 * p] - yface[0]) / cellSize, (positions[2 * p + 1] - yface[1]) / cellSize);
-          sumWeight[0] += wx;
-          sumWeight[1] += wy;
-          sumVel[0] += wx * velocities[2 * p];
-          sumVel[1] += wy * velocities[2 * p + 1];
-        }
-        // normalize
-        for (let k = 0; k < 2; k++) {
-
-          if (sumWeight[k] > 1e-10) sumVel[k] /= sumWeight[k];
-        }
-
-        // copy final velocity into grid
-        if (j < this.dim[1]) this.vx[i][j] = sumVel[0];
-        if (i < this.dim[0]) this.vy[i][j] = sumVel[1];
-      }
-      
-    }
-//    console.log(this.vy);
-
-    // finally mark cells as FLUID or AIR
-    this.markCells(mapToGrid);
-  }
-
-  markCells(mapToGrid) {
-    const numCells = this.dim[0];
-
-    // loop over all cells and 
-    // classify them as AIR or FLUID
-    for (let i = 0; i < this.dim[0]; ++i) {
       for (let j = 0; j < this.dim[1]; ++j) {
 
-        // Skip solid cells
-        if (this.cells[i][j] == voxelType.SOLID) continue;
+        // Edges of the domain
+        if (i == 0 || i == this.dim[0]) {
+          this.vx[i][j] = 0;
+          continue;
+        }
 
-        const key = j * numCells + i;
-        this.cells[i][j] = mapToGrid.has(key) ? voxelType.FLUID : voxelType.AIR;
+        if (this.cells[i][j] == voxelType.FLUID || this.cells[i-1][j] == voxelType.FLUID) {          
+          const row = i + j * nx;
+          const pressureDiff = pressure[row] - pressure[row - 1];
+          this.vx[i][j] -= pressureDiff * scale;
+        }
+      }
+    }
+
+    for (let i = 0; i < this.dim[0]; ++i) {
+      for (let j = 0; j <= this.dim[1]; ++j) {
+
+        // Edges of the domain
+        if (j == 0 || j == this.dim[1]) {
+          this.vy[i][j] = 0;
+          continue;
+        }
+
+        if (this.cells[i][j] == voxelType.FLUID || this.cells[i][j - 1] == voxelType.FLUID) {          
+          const row = i + j * nx;
+          const pressureDiff = pressure[row] - pressure[row - nx];
+          this.vy[i][j] -= pressureDiff * scale;
+        }
       }
     }
   }
@@ -288,8 +212,7 @@ class StaggeredGrid {
     solution.length = numCells;    
     solution.fill(0);
 
-    let numFluidCells = 0;
-    const term = dt / this.cellSize;
+    const scale = dt / this.cellSize;
     for (let j = 0; j < ny; ++j) {
       for (let i = 0; i < nx; ++i) {
         const row = i + nx * j;
@@ -298,7 +221,6 @@ class StaggeredGrid {
           rhs[row] = 0;
           continue;
         }
-        numFluidCells++;
 
         let cellType = [voxelType.SOLID, voxelType.SOLID, voxelType.SOLID, voxelType.SOLID];
         if (i+1 < nx) cellType[0] = this.cells[i + 1][j];
@@ -306,13 +228,6 @@ class StaggeredGrid {
         if (j+1 < ny) cellType[2] = this.cells[i][j + 1];
         if (j-1 >= 0) cellType[3] = this.cells[i][j - 1];
 
-        const cellsVel = [
-          -this.vx[i+1][j], 
-          this.vx[i][j],
-          -this.vy[i][j+1], 
-          this.vy[i][j]
-        ];
-        
         const idxInRow = [
           row + 1,
           row - 1,
@@ -321,63 +236,31 @@ class StaggeredGrid {
         ];
 
         // fill in sparse matrix
-        let rhsVal = 0.0;
         for (let cell = 0; cell < 4; ++cell) {
-          rhsVal += cellsVel[cell];
           
           if (cellType[cell] == voxelType.SOLID) continue;
           
           // if air or fluid
-          matrix.addToElement(row, row, term);  // cell element (diagonal)
+          matrix.addToElement(row, row, scale);  // cell element (diagonal)
 
           if (cellType[cell] == voxelType.FLUID) {
-            matrix.addToElement(row, idxInRow[cell], -term); // neighboring cells
+            matrix.addToElement(row, idxInRow[cell], -scale); // neighboring cells
           }
         }
         // write right-hand side of linear system
-        rhs[row] = rhsVal;
+        // that's equal to the divergence discretized on the mac grid
+        rhs[row] = (this.vx[i][j] - this.vx[i+1][j]) + (this.vy[i][j] - this.vy[i][j+1]);
       }
     }
 
-    // call conjugate gradient solver (Bridson's code)
+    // call preconditioned conjugate gradient (Bridson's code)
+    // to solve linear system
     if (!pcgSolver.solve(matrix, rhs, solution)) {
       console.log("Conjugate Gradient failed!");
-    }    
-
-    // loop over all simulation domain (grid)
-    for (let i = 0; i <= this.dim[0]; ++i) {
-      for (let j = 0; j < this.dim[1]; ++j) {
-
-        // Edges of the domain
-        if (i == 0 || i == this.dim[0]) {
-          this.vx[i][j] = 0;
-          continue;
-        }
-
-        if (this.cells[i][j] == voxelType.FLUID || this.cells[i-1][j] == voxelType.FLUID) {          
-          const row = i + j * nx;
-          const pressure = solution[row] - solution[row - 1];
-          this.vx[i][j] -= pressure * term;
-        }
-      }
     }
 
-    for (let i = 0; i < this.dim[0]; ++i) {
-      for (let j = 0; j <= this.dim[1]; ++j) {
-
-        // Edges of the domain
-        if (j == 0 || j == this.dim[1]) {
-          this.vy[i][j] = 0;
-          continue;
-        }
-
-        if (this.cells[i][j] == voxelType.FLUID || this.cells[i][j - 1] == voxelType.FLUID) {          
-          const row = i + j * nx;
-          const pressure = solution[row] - solution[row - nx];
-          this.vy[i][j] -= pressure * term;
-        }
-      }
-    }
+    // adjust velocity field to make it divergence free
+    this.removeDivergence(solution, scale);
   }
 
   enforceBoundary() {

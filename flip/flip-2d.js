@@ -74,6 +74,10 @@ async function main() {
   let boatVS = await response.text();
   response = await fetch('shaders/Boat.frag');
   let boatFS = await response.text();
+
+  response = await fetch('shaders/PressureSolve.frag');
+  let pressureSolveFS = await response.text();
+
   loadContainerElement.innerHTML="LOADING......";
 
   const shaders = {
@@ -82,6 +86,7 @@ async function main() {
     boundaryFS,
     boatVS,
     boatFS,
+    pressureSolveFS,
   };
 
   let boat = new Boat(gl, shaders, grid, boatObj, boatHull);
@@ -236,7 +241,7 @@ async function main() {
         // reset counter
         fpsTime = frameCounter = 0;
       }      
-      else if (!parametersUI.fps && frameCounter % 2000 == 0) {
+      else if (!parametersUI.fps && frameCounter % 500 == 0) {
         for (const [key, value] of Object.entries(flip.performance)) {
           let val = value/frameCounter;
           console.log(`${key}: ${val}`);
@@ -414,7 +419,7 @@ async function main() {
     }
 
     if (gpu != parametersUI.GPU) {
-      alert("GPU acceleration not implemented yet")
+     // alert("GPU acceleration not implemented yet")
     }
     gpu = ext && parametersUI.GPU;
     flip.flipness = parametersUI.fluidity;
