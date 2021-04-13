@@ -35,58 +35,51 @@ async function main() {
   const fpsCounter = document.querySelector(".fps_counter");
   
   loadContainerElement.innerHTML="LOADING..";
-  // load FLIP text shape that's stored in an "OBJ"-like .txt format
-  let response = await fetch("resources/flip.txt");
-  let text = await response.text();
-  let fontShape = parseTxt(text);
-  loadContainerElement.innerHTML="LOADING...";
-
-  // load boat that's stored in an OBJ format as well as hull
-  response = await fetch("resources/boat.obj");
-  text = await response.text();
-  let boatObj = parseOBJ(text);
-  response = await fetch("resources/boat_hull.txt");
-  text = await response.text();
-  let boatHull = parseTxt(text);  
+  
+  
+  // Promise.all() lets us coalesce multiple promises into a single super-promise
+  const res = await Promise.all(
+      [fetch("resources/flip.txt").then((response) => response.text()),
+      fetch("resources/boat.obj").then((response) => response.text()), 
+      fetch("resources/boat_hull.txt").then((response) => response.text()),
+      fetch('shaders/ParticleSphereShader2D.vert').then((response) => response.text()), 
+      fetch('shaders/ParticleSphereShader2D.frag').then((response) => response.text()),
+      fetch('shaders/grid.vert').then((response) => response.text()), 
+      fetch('shaders/grid.frag').then((response) => response.text()),
+      fetch("shaders/default.vert").then((response) => response.text()), 
+      fetch('shaders/Boundary.vert').then((response) => response.text()),
+      fetch('shaders/Boundary.frag').then((response) => response.text()),
+      fetch('shaders/Boat.vert').then((response) => response.text()), 
+      fetch('shaders/Boat.frag').then((response) => response.text()),
+      fetch('shaders/PressureSolve.frag').then((response) => response.text())]);  
   loadContainerElement.innerHTML="LOADING....";
 
-  // Load all shaders from separate files
-  response = await fetch('shaders/ParticleSphereShader2D.vert');
-  let vs = await response.text();
-  response = await fetch('shaders/ParticleSphereShader2D.frag');
-  let fs = await response.text();
+  // load FLIP text shape that's stored in an "OBJ"-like .txt format    
+  let fontShape = parseTxt(res[0]);  
 
-  response = await fetch('shaders/grid.vert');
-  let gridVS = await response.text();
-  response = await fetch('shaders/grid.frag');
-  let gridFS = await response.text();
-  loadContainerElement.innerHTML="LOADING.....";
+  // load boat that's stored in an OBJ format as well as hull    
+  let boatObj = parseOBJ(res[1]);  
+  let boatHull = parseTxt(res[2]);    
 
-  response = await fetch("shaders/default.vert");
-  let defaultVS = await response.text();
-  response = await fetch('shaders/Boundary.vert');
-  let boundaryVS = await response.text();
-  response = await fetch('shaders/Boundary.frag');
-  let boundaryFS = await response.text();
-  loadContainerElement.innerHTML="LOADING......";
-
-  response = await fetch('shaders/Boat.vert');
-  let boatVS = await response.text();
-  response = await fetch('shaders/Boat.frag');
-  let boatFS = await response.text();
-
-  response = await fetch('shaders/PressureSolve.frag');
-  let pressureSolveFS = await response.text();
-
-  loadContainerElement.innerHTML="LOADING......";
+  // Load all shaders from separate files  
+  let vs = res[3];  
+  let fs = res[4];  
+  let gridVS = res[5];  
+  let gridFS = res[6];
+  // let defaultVS =  res[7];  
+  // let boundaryVS =  res[8];  
+  // let boundaryFS =  res[9];    
+  // let boatVS = res[10];  
+  // let boatFS = res[11];  
+  // let pressureSolveFS = res[12];
 
   const shaders = {
-    defaultVS,
-    boundaryVS,
-    boundaryFS,
-    boatVS,
-    boatFS,
-    pressureSolveFS,
+    defaultVS:res[7],
+    boundaryVS:res[8],
+    boundaryFS:res[9],
+    boatVS:res[10],
+    boatFS:res[11],
+    pressureSolveFS:res[12],
   };
 
   let boat = new Boat(gl, shaders, grid, boatObj, boatHull);
